@@ -1,0 +1,109 @@
+#!/bin/bash
+# -*- sh -*-
+# vim: set syntax=sh
+# code: language=shellscript
+
+# SPDX-License-Identifier: MPL-2.0 AND Apache-2.0
+
+set -o errexit
+set -o nounset
+
+# enabling POSIX-compliant behavior for GNU programs
+export POSIXLY_CORRECT=yes POSIX_ME_HARDER=yes
+
+declare argv0
+if [[ ! "$0" =~ ^'/' ]]; then
+	argv0="$0"
+else
+	argv0="$(basename -- "$0" && printf x)"
+	argv0="${argv0%$'\nx'}"
+fi
+readonly argv0
+
+
+if (($# > 0)); then
+	echo "$argv0: too many arguments: $#" >&2
+	exit 4
+fi
+
+
+# TODO: this is Linux-based specific. check uname(1) and choose appropriately?
+declare tf2_config_dir_path
+tf2_config_dir_path="$HOME/.steam/steam/steamapps/common/Team Fortress 2/tf/cfg"
+readonly tf2_config_dir_path
+
+if [ ! -e "$tf2_config_dir_path" ]; then
+	echo "$argv0: $tf2_config_dir_path: no such directory" >&2
+	exit 24
+fi
+
+if [ ! -d "$tf2_config_dir_path" ]; then
+	echo "$argv0: $tf2_config_dir_path: not a directory" >&2
+	exit 26
+fi
+
+
+declare config_file_paths=()
+
+function search_config_files() {
+	local dir_path
+	dir_path="$1"
+	readonly dir_path
+
+	local entry
+	for entry in "$dir_path/"*; do
+		if [ -d "$entry" ]; then
+			search_config_files "$entry"
+			continue
+		fi
+
+		if [[ "$entry" =~ (^|'/')[^'/']+'.cfg'$ ]]; then
+			config_file_paths+=("$entry")
+		fi
+	done
+}
+readonly -f search_config_files
+
+
+declare root_dir_path
+root_dir_path="$(dirname -- "$0" && printf x)"
+root_dir_path="${root_dir_path%$'\nx'}"
+readonly root_dir_path
+
+declare installed_index_file_path
+installed_index_file_path="$root_dir_path/installed_index"
+readonly installed_index_file_path
+
+if [ -e "$installed_index_file_path" ] && [ ! -f "$installed_index_file_path" ]; then
+	echo "$argv0: $installed_index_file_path: not a regular file" >&2
+	exit 26
+fi
+
+
+if [ -e "$installed_index_file_path" ]; then
+	while read -r installed_config_filename; do
+		rm -f -- "$tf2_config_dir_path/$installed_config_filename"
+	done < "$installed_index_file_path"
+
+	# truncating file
+	true > "$installed_index_file_path"
+else
+	touch -- "$installed_index_file_path"
+fi
+
+
+search_config_files "$root_dir_path"
+readonly config_file_paths
+
+
+for config_file_path in "${config_file_paths[@]}"; do
+	declare config_filename
+	config_filename="$(basename -- "$config_file_path" && printf x)"
+	config_filename="${config_filename%$'\nx'}"
+
+	cp -- "$config_file_path" "$tf2_config_dir_path"
+	printf '%s\n' "$config_filename" >> "$installed_index_file_path"
+	echo "Installed '$config_file_path'" >&2
+
+	unset -v config_filename
+done
