@@ -1,15 +1,43 @@
 #!/bin/bash
 # -*- sh -*-
-# vim: set syntax=sh
+# vim: syntax=sh
 # code: language=shellscript
 
+# Copyright (c) 2025 Michael Federczuk
 # SPDX-License-Identifier: MPL-2.0 AND Apache-2.0
+
+#region preamble
+
+case "$-" in
+	(*'i'*)
+		if \command test -n "${BASH_VERSION-}"; then
+			# using `eval` here in case a non-Bash shell tries to parse this branch even if the condition is false
+			\command eval "\\command printf '%s: ' \"\${BASH_SOURCE[0]}\" >&2"
+		fi
+
+		\command printf 'script was called interactively\n' >&2
+		return 124
+		;;
+esac
 
 set -o errexit
 set -o nounset
 
 # enabling POSIX-compliant behavior for GNU programs
 export POSIXLY_CORRECT=yes POSIX_ME_HARDER=yes
+
+if [ -z "${BASH_VERSION-}" ]; then
+	if [ "${0#/}" = "$0" ]; then
+		argv0="$0"
+	else
+		argv0="$(basename -- "$0" && printf x)"
+		argv0="${argv0%"$(printf '\nx')"}"
+	fi
+	readonly argv0
+
+	printf '%s: GNU Bash is required for this script\n' "$argv0" >&2
+	exit 1
+fi
 
 declare argv0
 if [[ ! "$0" =~ ^'/' ]]; then
@@ -20,90 +48,111 @@ else
 fi
 readonly argv0
 
+#endregion
 
 if (($# > 0)); then
-	echo "$argv0: too many arguments: $#" >&2
+	printf '%s: too many arguments: %d\n' "$argv0" $# >&2
 	exit 4
 fi
 
 
 # TODO: this is Linux-based specific. check uname(1) and choose appropriately?
 declare tf2_config_dir_path
-tf2_config_dir_path="$HOME/.steam/steam/steamapps/common/Team Fortress 2/tf/cfg"
+tf2_config_dir_path="$HOME/.local/share/Steam/steamapps/common/Team Fortress 2/tf/cfg"
 readonly tf2_config_dir_path
 
 if [ ! -e "$tf2_config_dir_path" ]; then
-	echo "$argv0: $tf2_config_dir_path: no such directory" >&2
+	printf '%s: %s: no such directory\n' "$argv0" "$tf2_config_dir_path" >&2
 	exit 24
 fi
 
 if [ ! -d "$tf2_config_dir_path" ]; then
-	echo "$argv0: $tf2_config_dir_path: not a directory" >&2
+	printf '%s: %s: no such directory\n' "$argv0" "$tf2_config_dir_path" >&2
 	exit 26
 fi
 
 
-declare config_file_paths=()
+declare script_dir_path
+script_dir_path="$(dirname -- "$0" && printf x)"
+script_dir_path="${script_dir_path%$'\nx'}"
+readonly script_dir_path
 
-function search_config_files() {
-	local dir_path
-	dir_path="$1"
-	readonly dir_path
 
-	local entry
-	for entry in "$dir_path/"*; do
-		if [ -d "$entry" ]; then
-			search_config_files "$entry"
+declare -A config_files
+config_files=()
+
+function collect_config_files() {
+	local entry_path
+	for entry_path in "$1/"*; do
+		if [[ "$entry_path" =~ ^'./'(.+)$ ]]; then
+			entry_path="${BASH_REMATCH[1]}"
+		fi
+
+		if [ -d "$entry_path" ]; then
+			collect_config_files "$entry_path"
 			continue
 		fi
 
-		if [[ "$entry" =~ (^|'/')[^'/']+'.cfg'$ ]]; then
-			config_file_paths+=("$entry")
+		local entry_filename
+		entry_filename="$(basename -- "$entry_path" && printf x)"
+		entry_filename="${entry_filename%$'\nx'}"
+
+		if [[ "$entry_filename" =~ [^'.']+'.cfg'$ ]]; then
+			if [ "${config_files["$entry_filename"]+already_exists}" = 'already_exists' ]; then
+				printf '%s: two or more files with equal filenames: %s and %s\n' \
+				       "$argv0" \
+				       "${config_files["$entry_filename"]}" \
+				       "$entry_filename" >&2
+				exit 48
+			fi
+
+			config_files+=(["$entry_filename"]="$entry_path")
 		fi
+
+		unset -v entry_filename
 	done
 }
-readonly -f search_config_files
+
+collect_config_files "$script_dir_path"
+
+unset -f collect_config_files
+
+readonly config_files
 
 
-declare root_dir_path
-root_dir_path="$(dirname -- "$0" && printf x)"
-root_dir_path="${root_dir_path%$'\nx'}"
-readonly root_dir_path
-
-declare installed_index_file_path
-installed_index_file_path="$root_dir_path/installed_index"
-readonly installed_index_file_path
-
-if [ -e "$installed_index_file_path" ] && [ ! -f "$installed_index_file_path" ]; then
-	echo "$argv0: $installed_index_file_path: not a regular file" >&2
-	exit 26
-fi
+declare install_index_file_path
+install_index_file_path="$script_dir_path/.install_index.txt"
+readonly install_index_file_path
 
 
-if [ -e "$installed_index_file_path" ]; then
+if [ -e "$install_index_file_path" ]; then
+	if [ ! -f "$install_index_file_path" ]; then
+		printf '%s: %s: not a regular file\n' "$argv0" "$install_index_file_path" >&2
+		exit 26
+	fi
+
 	while read -r installed_config_filename; do
 		rm -f -- "$tf2_config_dir_path/$installed_config_filename"
-	done < "$installed_index_file_path"
+	done < "$install_index_file_path"
 
 	# truncating file
-	true > "$installed_index_file_path"
+	true > "$install_index_file_path"
 else
-	touch -- "$installed_index_file_path"
+	touch -- "$install_index_file_path"
 fi
 
 
-search_config_files "$root_dir_path"
-readonly config_file_paths
+declare config_filename
+for config_filename in "${!config_files[@]}"; do
+	declare config_file_path
+	config_file_path="${config_files["$config_filename"]}"
 
+	cp -- "$config_file_path" "$tf2_config_dir_path/$config_filename"
+	printf '%s\n' "$config_filename" >> "$install_index_file_path"
+	printf "Installed '%s'\\n" "$config_file_path" >&2
 
-for config_file_path in "${config_file_paths[@]}"; do
-	declare config_filename
-	config_filename="$(basename -- "$config_file_path" && printf x)"
-	config_filename="${config_filename%$'\nx'}"
-
-	cp -- "$config_file_path" "$tf2_config_dir_path"
-	printf '%s\n' "$config_filename" >> "$installed_index_file_path"
-	echo "Installed '$config_file_path'" >&2
-
-	unset -v config_filename
+	unset -v config_file_path
 done
+unset -v config_filename
+
+printf 'Done.\n' >&2
